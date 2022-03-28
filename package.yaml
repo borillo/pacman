@@ -24,6 +24,7 @@ dependencies:
   - brick
   - vty
   - lens
+  - containers
 
 library:
   source-dirs: src

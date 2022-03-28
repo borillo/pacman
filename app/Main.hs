@@ -11,35 +11,87 @@ import Graphics.Vty.Attributes
 import Graphics.Vty.Input
 
 import Control.Lens
+import Control.Monad
 import Control.Monad.IO.Class
+
+import qualified Data.Map as M
 
 type NameData = ()
 type EventData = ()
 
-type Position = (Int, Int)
+type Row = Int
+type Column = Int
+
+type Position = (Row, Column)
 type DashBoardSize = (Int, Int)
+
+data BoardCell = Space | Brick | Pacman deriving Show
+type Board = M.Map Position BoardCell
 
 data ContextData = ContextData {
   _position :: Position,
-  _dashboardSize :: DashBoardSize
-} deriving (Show)
+  _dashboardSize :: DashBoardSize,
+  _dashboard :: Board
+} deriving Show
 
 makeLenses ''ContextData
 
-width=100
-height=10
+emptyContextData :: ContextData
+emptyContextData = ContextData (0, 0) (0, 0) M.empty
 
+positionX :: Lens' ContextData Int
 positionX = position . _1
+
+positionY :: Lens' ContextData Int
 positionY = position . _2
+
+width :: Lens' ContextData Int
+width = dashboardSize . _1
+
+height :: Lens' ContextData Int
+height = dashboardSize . _2
+
+maze :: [String]
+maze = [
+  "+--------+",
+  "|C       |",
+  "| --+    |",
+  "|   +--- |",
+  "|        |",
+  "| ------ |",
+  "|        |",
+  "|   ---  |",
+  "|        |",
+  "+--------+"]
+
+parseCell :: Char -> Maybe BoardCell
+parseCell ' ' = Just Space
+parseCell 'C' = Nothing
+parseCell _ = Just Brick
+
+parseRow :: (Row, String) -> ContextData -> ContextData
+parseRow (row, line) board = foldr f board $ zip [0..] line
+  where f (col, cell) = case parseCell cell of
+                          Just x -> over dashboard $ M.insert (row, col) x 
+                          Nothing -> set position (col, row)
+    
+parseBoard :: [String] -> ContextData
+parseBoard rows = set width (length $ head rows)
+  . set height (length rows)
+  . foldr parseRow emptyContextData 
+  $ zip [0..] rows
 
 drawBoard :: ContextData -> Widget NameData
 drawBoard cd = border $ vBox rows
-  where rows = [str $ cellsInRow r | r <- [0 .. height-1]]        
-        spaces w = replicate w ' '
-        emptyLine = spaces width
-        cellsInRow r 
-          | r /= cd ^. positionY = emptyLine
-          | otherwise = spaces (cd ^. positionX) ++ 'X':spaces (width - cd ^. positionX - 1)
+  where rows = [str $ cellsInRow r | r <- [0 .. cd ^. height - 1]]        
+        cellsInRow r = do
+          c <- [0 .. cd ^. width - 1]
+          return $ if c == cd ^. positionX && r == cd ^. positionY then 
+            'C' 
+          else 
+            case M.lookup (r, c) (cd ^. dashboard) of
+              Just Brick -> '+'
+              _ -> ' '
 
 ui :: ContextData -> Widget NameData
 ui cd = withBorderStyle unicode $ drawBoard cd
@@ -62,13 +114,11 @@ handleEvent cd (VtyEvent (EvKey (KChar 'c') [MCtrl]))  = halt cd
 handleEvent cd (VtyEvent (EvKey KUp [])) = continue $
   cd & positionY %~ safeDecrease
 handleEvent cd (VtyEvent (EvKey KDown [])) = continue $ 
-  cd & positionY %~ safeIncrease height
+  cd & positionY %~ safeIncrease (cd ^. height)
 handleEvent cd (VtyEvent (EvKey KLeft [])) = continue $
   cd & positionX %~ safeDecrease
 handleEvent cd (VtyEvent (EvKey KRight [])) = continue $
-  cd & positionX %~ safeIncrease width
-handleEvent cd (VtyEvent (EvResize w h)) = continue $
-  cd & dashboardSize .~ (w, h)
+  cd & positionX %~ safeIncrease (cd ^. width)
 handleEvent cd _  = continue cd 
 
 handleStartEvent :: ContextData -> EventM NameData ContextData
@@ -86,9 +136,6 @@ main = do
         , appStartEvent = handleStartEvent
         , appAttrMap = handleAttrMap
       }
-      initialState = ContextData (0, 0) (width, height)
+      initialState = parseBoard maze
   finalState <- defaultMain app initialState
   return ()
-
-  -- TODO: Al definir positionX/positionY solo funciona si está 
-  -- en drawBoard o en handleEvent, pero no en ambas
