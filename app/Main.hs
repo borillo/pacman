@@ -1,4 +1,6 @@
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE TupleSections #-}
 
 module Main where
 
@@ -21,11 +23,25 @@ type EventData = ()
 
 type Row = Int
 type Column = Int
+type Width = Int
+type Height = Int
 
 type Position = (Row, Column)
-type DashBoardSize = (Int, Int)
 
-data BoardCell = Space | Brick | Pacman deriving Show
+up :: Position -> Position
+up p = p & _1 %~ subtract 1
+
+down :: Position -> Position
+down p = p & _1 %~ (+1)
+
+left :: Position -> Position
+left p = p & _2 %~ subtract 1
+
+right :: Position -> Position
+right p = p & _2 %~ (+1)
+
+type DashBoardSize = (Width, Height)
+data BoardCell = Space | Brick | Pacman deriving (Show, Eq)
 type Board = M.Map Position BoardCell
 
 data ContextData = ContextData {
@@ -39,30 +55,33 @@ makeLenses ''ContextData
 emptyContextData :: ContextData
 emptyContextData = ContextData (0, 0) (0, 0) M.empty
 
-positionX :: Lens' ContextData Int
-positionX = position . _1
+positionX :: Lens' ContextData Column
+positionX = position . _2
 
-positionY :: Lens' ContextData Int
-positionY = position . _2
+positionY :: Lens' ContextData Row
+positionY = position . _1
 
-width :: Lens' ContextData Int
+width :: Lens' ContextData Width
 width = dashboardSize . _1
 
-height :: Lens' ContextData Int
+height :: Lens' ContextData Height
 height = dashboardSize . _2
+
+cell :: Position -> Lens' ContextData (Maybe BoardCell)
+cell p = dashboard . at p
 
 maze :: [String]
 maze = [
-  "+--------+",
-  "|C       |",
-  "| --+    |",
-  "|   +--- |",
-  "|        |",
-  "| ------ |",
-  "|        |",
-  "|   ---  |",
-  "|        |",
-  "+--------+"]
+  "+----------+",
+  "| C        |",
+  "| --+      |",
+  "|   +----- |",
+  "|          |",
+  "| ------   |",
+  "|          |",
+  "|   ---    |",
+  "|          |",
+  "+----------+"]
 
 parseCell :: Char -> Maybe BoardCell
 parseCell ' ' = Just Space
@@ -71,9 +90,10 @@ parseCell _ = Just Brick
 
 parseRow :: (Row, String) -> ContextData -> ContextData
 parseRow (row, line) board = foldr f board $ zip [0..] line
-  where f (col, cell) = case parseCell cell of
-                          Just x -> over dashboard $ M.insert (row, col) x 
-                          Nothing -> set position (col, row)
+  where f (col, c) = case parseCell c of
+                          Just x -> set (cell (row, col)) (Just x)
+                          Nothing -> set position (row, col) . 
+                                     set (cell (row, col)) (Just Space)
     
 parseBoard :: [String] -> ContextData
 parseBoard rows = set width (length $ head rows)
@@ -83,16 +103,13 @@ parseBoard rows = set width (length $ head rows)
 
 drawBoard :: ContextData -> Widget NameData
 drawBoard cd = border $ vBox rows
-  where rows = [str $ cellsInRow r | r <- [0 .. cd ^. height - 1]]        
-        cellsInRow r = do
-          c <- [0 .. cd ^. width - 1]
-          return $ if c == cd ^. positionX && r == cd ^. positionY then 
-            'C' 
-          else 
-            case M.lookup (r, c) (cd ^. dashboard) of
-              Just Brick -> '+'
-              _ -> ' '
-
+  where rows = map (str . cellsInRow) [0 .. cd ^. height - 1]
+        cellsInRow row = map (cellToChar . (row,)) [0 .. cd ^. width - 1]
+        cellToChar pos
+          | pos == cd ^. position = 'C'
+          | cd ^. cell pos == Just Brick = '+'
+          | otherwise = ' '
+                     
 ui :: ContextData -> Widget NameData
 ui cd = withBorderStyle unicode $ drawBoard cd
 
@@ -108,17 +125,19 @@ safeIncrease :: Int -> Int -> Int
 safeIncrease limit n
   | n < limit - 1 = n + 1
   | otherwise = limit - 1
+
+safeMove :: (Position -> Position) -> ContextData -> ContextData
+safeMove move cd 
+  | cd ^. cell p == Just Space = cd & position .~ p 
+  | otherwise = cd
+  where p = move $ cd ^. position
   
 handleEvent :: ContextData -> BrickEvent NameData EventData -> EventM NameData (Next ContextData)
-handleEvent cd (VtyEvent (EvKey (KChar 'c') [MCtrl]))  = halt cd
-handleEvent cd (VtyEvent (EvKey KUp [])) = continue $
-  cd & positionY %~ safeDecrease
-handleEvent cd (VtyEvent (EvKey KDown [])) = continue $ 
-  cd & positionY %~ safeIncrease (cd ^. height)
-handleEvent cd (VtyEvent (EvKey KLeft [])) = continue $
-  cd & positionX %~ safeDecrease
-handleEvent cd (VtyEvent (EvKey KRight [])) = continue $
-  cd & positionX %~ safeIncrease (cd ^. width)
+handleEvent cd (VtyEvent (EvKey (KChar 'c') [MCtrl])) = halt cd
+handleEvent cd (VtyEvent (EvKey KUp [])) = continue $ safeMove up cd
+handleEvent cd (VtyEvent (EvKey KDown [])) = continue $ safeMove down cd
+handleEvent cd (VtyEvent (EvKey KLeft [])) = continue $ safeMove left cd
+handleEvent cd (VtyEvent (EvKey KRight [])) = continue $ safeMove right cd
 handleEvent cd _  = continue cd 
 
 handleStartEvent :: ContextData -> EventM NameData ContextData
