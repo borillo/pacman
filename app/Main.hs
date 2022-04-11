@@ -8,18 +8,22 @@ import Brick
 import Brick.Widgets.Center
 import Brick.Widgets.Border
 import Brick.Widgets.Border.Style
+import Brick.BChan (newBChan, writeBChan)
 
 import Graphics.Vty.Attributes
 import Graphics.Vty.Input
+import qualified Graphics.Vty as V
 
 import Control.Lens
 import Control.Monad
 import Control.Monad.IO.Class
 
+import Control.Concurrent (threadDelay, forkIO)
+
 import qualified Data.Map as M
 
 type NameData = ()
-type EventData = ()
+data EventData = Tick
 
 type Row = Int
 type Column = Int
@@ -43,9 +47,11 @@ right p = p & _2 %~ (+1)
 type DashBoardSize = (Width, Height)
 data BoardCell = Space | Brick | Pacman deriving (Show, Eq)
 type Board = M.Map Position BoardCell
+data Movement = MoveLeft | MoveRight | MoveUp | MoveDown | Stop deriving Show
 
 data ContextData = ContextData {
   _position :: Position,
+  _movement :: Movement,
   _dashboardSize :: DashBoardSize,
   _dashboard :: Board
 } deriving Show
@@ -53,7 +59,7 @@ data ContextData = ContextData {
 makeLenses ''ContextData
 
 emptyContextData :: ContextData
-emptyContextData = ContextData (0, 0) (0, 0) M.empty
+emptyContextData = ContextData (0, 0) Stop (0, 0) M.empty
 
 positionX :: Lens' ContextData Column
 positionX = position . _2
@@ -119,26 +125,33 @@ handleDraw s = [ui s]
 safeDecrease :: Int -> Int
 safeDecrease n
   | n > 0 = n - 1
-  | otherwise = 0
+  | otherwise = 0                                                                    
+  │++++++++++++│                       
 
 safeIncrease :: Int -> Int -> Int
 safeIncrease limit n
   | n < limit - 1 = n + 1
   | otherwise = limit - 1
 
-safeMove :: (Position -> Position) -> ContextData -> ContextData
+safeMove :: Movement -> ContextData -> ContextData
 safeMove move cd 
   | cd ^. cell p == Just Space = cd & position .~ p 
-  | otherwise = cd
-  where p = move $ cd ^. position
-  
+  | otherwise = cd & movement .~ Stop 
+  where p = (case move of
+              MoveUp -> up
+              MoveDown -> down
+              MoveLeft -> left
+              MoveRight -> right
+              Stop -> id) $ cd ^. position
+
 handleEvent :: ContextData -> BrickEvent NameData EventData -> EventM NameData (Next ContextData)
+handleEvent cd (AppEvent Tick) = continue $ safeMove (cd ^. movement) cd
 handleEvent cd (VtyEvent (EvKey (KChar 'c') [MCtrl])) = halt cd
-handleEvent cd (VtyEvent (EvKey KUp [])) = continue $ safeMove up cd
-handleEvent cd (VtyEvent (EvKey KDown [])) = continue $ safeMove down cd
-handleEvent cd (VtyEvent (EvKey KLeft [])) = continue $ safeMove left cd
-handleEvent cd (VtyEvent (EvKey KRight [])) = continue $ safeMove right cd
-handleEvent cd _  = continue cd 
+handleEvent cd (VtyEvent (EvKey KUp [])) = continue $ set movement MoveUp cd
+handleEvent cd (VtyEvent (EvKey KDown [])) = continue $ set movement MoveDown cd
+handleEvent cd (VtyEvent (EvKey KLeft [])) = continue $ set movement MoveLeft cd
+handleEvent cd (VtyEvent (EvKey KRight [])) = continue $ set movement MoveRight cd
+handleEvent cd _  = continue cd
 
 handleStartEvent :: ContextData -> EventM NameData ContextData
 handleStartEvent = return
@@ -148,6 +161,10 @@ handleAttrMap s = attrMap defAttr []
 
 main :: IO ()
 main = do
+  chan <- newBChan 10
+  forkIO $ forever $ do
+    writeBChan chan Tick
+    threadDelay 500000
   let app = App { 
         appDraw = handleDraw
         , appChooseCursor = neverShowCursor
@@ -156,5 +173,6 @@ main = do
         , appAttrMap = handleAttrMap
       }
       initialState = parseBoard maze
-  finalState <- defaultMain app initialState
+  vty <- V.mkVty V.defaultConfig
+  finalState <- customMain vty (V.mkVty V.defaultConfig) (Just chan) app initialState
   return ()
