@@ -45,26 +45,35 @@ right :: Position -> Position
 right p = p & _2 %~ (+1)
 
 type DashBoardSize = (Width, Height)
-data BoardCell = Space | Brick | Pacman deriving (Show, Eq)
+data BoardCell = Space | Brick | Pacman | Ghost deriving (Show, Eq)
 type Board = M.Map Position BoardCell
 data Movement = MoveLeft | MoveRight | MoveUp | MoveDown | Stop deriving Show
 
-data ContextData = ContextData {
+type Ghosts = [Character]
+
+data Character = Character {
   _position :: Position,
-  _movement :: Movement,
+  _movement :: Movement
+} deriving Show
+
+makeLenses ''Character
+
+data ContextData = ContextData {
+  _player :: Character,
   _dashboardSize :: DashBoardSize,
-  _dashboard :: Board
+  _dashboard :: Board,
+  _ghosts :: Ghosts
 } deriving Show
 
 makeLenses ''ContextData
 
 emptyContextData :: ContextData
-emptyContextData = ContextData (0, 0) Stop (0, 0) M.empty
+emptyContextData = ContextData (Character (0, 0) Stop) (0, 0) M.empty []
 
-positionX :: Lens' ContextData Column
+positionX :: Lens' Character Column
 positionX = position . _2
 
-positionY :: Lens' ContextData Row
+positionY :: Lens' Character Row
 positionY = position . _1
 
 width :: Lens' ContextData Width
@@ -76,6 +85,8 @@ height = dashboardSize . _2
 cell :: Position -> Lens' ContextData (Maybe BoardCell)
 cell p = dashboard . at p
 
+type CharacterL = Lens' ContextData Character
+
 maze :: [String]
 maze = [
   "+----------+",
@@ -84,22 +95,26 @@ maze = [
   "|   +----- |",
   "|          |",
   "| ------   |",
-  "|          |",
+  "|     M    |",
   "|   ---    |",
-  "|          |",
+  "|  M       |",
   "+----------+"]
 
-parseCell :: Char -> Maybe BoardCell
-parseCell ' ' = Just Space
-parseCell 'C' = Nothing
-parseCell _ = Just Brick
+parseCell :: Char -> BoardCell
+parseCell ' ' = Space
+parseCell 'C' = Pacman
+parseCell 'M' = Ghost
+parseCell _ = Brick
 
 parseRow :: (Row, String) -> ContextData -> ContextData
 parseRow (row, line) board = foldr f board $ zip [0..] line
   where f (col, c) = case parseCell c of
-                          Just x -> set (cell (row, col)) (Just x)
-                          Nothing -> set position (row, col) . 
-                                     set (cell (row, col)) (Just Space)
+                          Pacman -> set (player . position) (row, col) . 
+                                    set (cell (row, col)) (Just Space)
+                          Ghost  -> over ghosts (Character (row, col) MoveRight:) . 
+                                    set (cell (row, col)) (Just Space)
+                          x      -> set (cell (row, col)) (Just x)
+                               
     
 parseBoard :: [String] -> ContextData
 parseBoard rows = set width (length $ head rows)
@@ -112,8 +127,9 @@ drawBoard cd = border $ vBox rows
   where rows = map (str . cellsInRow) [0 .. cd ^. height - 1]
         cellsInRow row = map (cellToChar . (row,)) [0 .. cd ^. width - 1]
         cellToChar pos
-          | pos == cd ^. position = 'C'
+          | pos == cd ^. player . position = 'C'
           | cd ^. cell pos == Just Brick = '+'
+          | any ((== pos) . view position) (cd ^. ghosts) = 'M'
           | otherwise = ' '
                      
 ui :: ContextData -> Widget NameData
@@ -126,31 +142,35 @@ safeDecrease :: Int -> Int
 safeDecrease n
   | n > 0 = n - 1
   | otherwise = 0                                                                    
-  │++++++++++++│                       
 
 safeIncrease :: Int -> Int -> Int
 safeIncrease limit n
   | n < limit - 1 = n + 1
   | otherwise = limit - 1
 
-safeMove :: Movement -> ContextData -> ContextData
-safeMove move cd 
-  | cd ^. cell p == Just Space = cd & position .~ p 
-  | otherwise = cd & movement .~ Stop 
+safeMove :: Movement -> CharacterL -> ContextData -> ContextData
+safeMove move cl cd 
+  | cd ^. cell p == Just Space = cd & cl . position .~ p 
+  | otherwise = cd & cl . movement .~ Stop 
   where p = (case move of
               MoveUp -> up
               MoveDown -> down
               MoveLeft -> left
               MoveRight -> right
-              Stop -> id) $ cd ^. position
+              Stop -> id) $ cd ^. cl . position
+
+processTick :: ContextData -> ContextData
+processTick cd =  (movePacman . moveGhosts) cd
+  where movePacman = safeMove (cd ^. player . movement) player
+        moveGhosts = undefined --TODO: traversed . ghosts
 
 handleEvent :: ContextData -> BrickEvent NameData EventData -> EventM NameData (Next ContextData)
-handleEvent cd (AppEvent Tick) = continue $ safeMove (cd ^. movement) cd
+handleEvent cd (AppEvent Tick) = continue $ processTick cd
 handleEvent cd (VtyEvent (EvKey (KChar 'c') [MCtrl])) = halt cd
-handleEvent cd (VtyEvent (EvKey KUp [])) = continue $ set movement MoveUp cd
-handleEvent cd (VtyEvent (EvKey KDown [])) = continue $ set movement MoveDown cd
-handleEvent cd (VtyEvent (EvKey KLeft [])) = continue $ set movement MoveLeft cd
-handleEvent cd (VtyEvent (EvKey KRight [])) = continue $ set movement MoveRight cd
+handleEvent cd (VtyEvent (EvKey KUp [])) = continue $ set (player . movement) MoveUp cd
+handleEvent cd (VtyEvent (EvKey KDown [])) = continue $ set (player . movement) MoveDown cd
+handleEvent cd (VtyEvent (EvKey KLeft [])) = continue $ set (player . movement) MoveLeft cd
+handleEvent cd (VtyEvent (EvKey KRight [])) = continue $ set (player . movement) MoveRight cd
 handleEvent cd _  = continue cd
 
 handleStartEvent :: ContextData -> EventM NameData ContextData
