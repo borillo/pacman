@@ -48,7 +48,6 @@ type DashBoardSize = (Width, Height)
 data BoardCell = Space | Brick | Pacman | Ghost deriving (Show, Eq)
 type Board = M.Map Position BoardCell
 data Movement = MoveLeft | MoveRight | MoveUp | MoveDown | Stop deriving Show
-
 type Ghosts = [Character]
 
 data Character = Character {
@@ -114,8 +113,7 @@ parseRow (row, line) board = foldr f board $ zip [0..] line
                           Ghost  -> over ghosts (Character (row, col) MoveRight:) . 
                                     set (cell (row, col)) (Just Space)
                           x      -> set (cell (row, col)) (Just x)
-                               
-    
+                                   
 parseBoard :: [String] -> ContextData
 parseBoard rows = set width (length $ head rows)
   . set height (length rows)
@@ -148,21 +146,21 @@ safeIncrease limit n
   | n < limit - 1 = n + 1
   | otherwise = limit - 1
 
-safeMove :: Movement -> CharacterL -> ContextData -> ContextData
-safeMove move cl cd 
-  | cd ^. cell p == Just Space = cd & cl . position .~ p 
-  | otherwise = cd & cl . movement .~ Stop 
-  where p = (case move of
+safeMove :: ContextData -> Character -> Character
+safeMove cd ch
+  | cd ^. cell p == Just Space = ch & position .~ p 
+  | otherwise = ch & movement .~ Stop 
+  where p = (case ch ^. movement of
               MoveUp -> up
               MoveDown -> down
               MoveLeft -> left
               MoveRight -> right
-              Stop -> id) $ cd ^. cl . position
+              Stop -> id) $ ch ^. position
 
 processTick :: ContextData -> ContextData
-processTick cd =  (movePacman . moveGhosts) cd
-  where movePacman = safeMove (cd ^. player . movement) player
-        moveGhosts = undefined --TODO: traversed . ghosts
+processTick cd = (movePacman . moveGhosts) cd
+  where movePacman = over player (safeMove cd)
+        moveGhosts = over (ghosts . traversed) (safeMove cd)
 
 handleEvent :: ContextData -> BrickEvent NameData EventData -> EventM NameData (Next ContextData)
 handleEvent cd (AppEvent Tick) = continue $ processTick cd
