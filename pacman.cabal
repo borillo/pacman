@@ -35,6 +35,7 @@ library
     , brick
     , containers
     , lens
+    , mtl
     , vty
   default-language: Haskell2010
 
@@ -50,6 +51,7 @@ executable pacman-exe
     , brick
     , containers
     , lens
+    , mtl
     , pacman
     , vty
   default-language: Haskell2010
@@ -67,6 +69,7 @@ test-suite pacman-test
     , brick
     , containers
     , lens
+    , mtl
     , pacman
     , vty
   default-language: Haskell2010

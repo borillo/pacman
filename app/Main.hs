@@ -16,6 +16,7 @@ import qualified Graphics.Vty as V
 
 import Control.Lens
 import Control.Monad
+import Control.Monad.State
 import Control.Monad.IO.Class
 
 import Control.Concurrent (threadDelay, forkIO)
@@ -65,6 +66,8 @@ data ContextData = ContextData {
 } deriving Show
 
 makeLenses ''ContextData
+
+type PacmanM = State ContextData
 
 emptyContextData :: ContextData
 emptyContextData = ContextData (Character (0, 0) Stop) (0, 0) M.empty []
@@ -157,19 +160,29 @@ safeMove cd ch
               MoveRight -> right
               Stop -> id) $ ch ^. position
 
-processTick :: ContextData -> ContextData
-processTick cd = (movePacman . moveGhosts) cd
-  where movePacman = over player (safeMove cd)
-        moveGhosts = over (ghosts . traversed) (safeMove cd)
+processTick :: PacmanM ()
+processTick = do
+  cd <- get
+  player %= safeMove cd
+  ghosts . traversed %= safeMove cd        
 
-handleEvent :: ContextData -> BrickEvent NameData EventData -> EventM NameData (Next ContextData)
-handleEvent cd (AppEvent Tick) = continue $ processTick cd
-handleEvent cd (VtyEvent (EvKey (KChar 'c') [MCtrl])) = halt cd
-handleEvent cd (VtyEvent (EvKey KUp [])) = continue $ set (player . movement) MoveUp cd
-handleEvent cd (VtyEvent (EvKey KDown [])) = continue $ set (player . movement) MoveDown cd
-handleEvent cd (VtyEvent (EvKey KLeft [])) = continue $ set (player . movement) MoveLeft cd
-handleEvent cd (VtyEvent (EvKey KRight [])) = continue $ set (player . movement) MoveRight cd
-handleEvent cd _  = continue cd
+execPacman :: PacmanM () -> ContextData -> ContextData
+execPacman = execState
+
+movePacman :: Movement -> PacmanM ()
+movePacman = assign $ player . movement
+
+handleArrowKey :: Movement -> ContextData -> EventM NameData (Next ContextData)
+handleArrowKey m = continue . execPacman (movePacman m)
+
+handleEvent :: BrickEvent NameData EventData -> ContextData -> EventM NameData (Next ContextData)
+handleEvent (AppEvent Tick) = continue . execPacman processTick
+handleEvent (VtyEvent (EvKey (KChar 'c') [MCtrl])) = halt
+handleEvent (VtyEvent (EvKey KUp [])) = handleArrowKey MoveUp
+handleEvent (VtyEvent (EvKey KDown [])) = handleArrowKey MoveDown
+handleEvent (VtyEvent (EvKey KLeft [])) = handleArrowKey MoveLeft
+handleEvent (VtyEvent (EvKey KRight [])) = handleArrowKey MoveRight
+handleEvent _  = continue
 
 handleStartEvent :: ContextData -> EventM NameData ContextData
 handleStartEvent = return
@@ -186,7 +199,7 @@ main = do
   let app = App { 
         appDraw = handleDraw
         , appChooseCursor = neverShowCursor
-        , appHandleEvent = handleEvent
+        , appHandleEvent = flip handleEvent
         , appStartEvent = handleStartEvent
         , appAttrMap = handleAttrMap
       }
