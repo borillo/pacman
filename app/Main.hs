@@ -166,23 +166,27 @@ processTick = do
   player %= safeMove cd
   ghosts . traversed %= safeMove cd        
 
-execPacman :: PacmanM () -> ContextData -> ContextData
-execPacman = execState
+evalPacman :: PacmanM a -> ContextData -> a
+evalPacman = evalState
 
 movePacman :: Movement -> PacmanM ()
 movePacman = assign $ player . movement
 
-handleArrowKey :: Movement -> ContextData -> EventM NameData (Next ContextData)
-handleArrowKey m = continue . execPacman (movePacman m)
+handleArrowKey :: Movement -> PacmanM (EventM NameData (Next ContextData))
+handleArrowKey m = do
+  movePacman m
+  gets continue
 
-handleEvent :: BrickEvent NameData EventData -> ContextData -> EventM NameData (Next ContextData)
-handleEvent (AppEvent Tick) = continue . execPacman processTick
-handleEvent (VtyEvent (EvKey (KChar 'c') [MCtrl])) = halt
+handleEvent :: BrickEvent NameData EventData -> PacmanM (EventM NameData (Next ContextData))
+handleEvent (AppEvent Tick) = do
+  processTick
+  gets continue
+handleEvent (VtyEvent (EvKey (KChar 'c') [MCtrl])) = gets halt
 handleEvent (VtyEvent (EvKey KUp [])) = handleArrowKey MoveUp
 handleEvent (VtyEvent (EvKey KDown [])) = handleArrowKey MoveDown
 handleEvent (VtyEvent (EvKey KLeft [])) = handleArrowKey MoveLeft
 handleEvent (VtyEvent (EvKey KRight [])) = handleArrowKey MoveRight
-handleEvent _  = continue
+handleEvent _  = gets continue
 
 handleStartEvent :: ContextData -> EventM NameData ContextData
 handleStartEvent = return
@@ -199,7 +203,7 @@ main = do
   let app = App { 
         appDraw = handleDraw
         , appChooseCursor = neverShowCursor
-        , appHandleEvent = flip handleEvent
+        , appHandleEvent = flip (evalPacman . handleEvent)
         , appStartEvent = handleStartEvent
         , appAttrMap = handleAttrMap
       }
