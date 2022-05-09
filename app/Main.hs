@@ -111,16 +111,16 @@ parseCell _ = Brick
 parseRow :: (Row, String) -> ContextData -> ContextData
 parseRow (row, line) board = foldr f board $ zip [0..] line
   where f (col, c) = case parseCell c of
-                          Pacman -> set (player . position) (row, col) . 
+                          Pacman -> set (player . position) (row, col) .
                                     set (cell (row, col)) (Just Space)
-                          Ghost  -> over ghosts (Character (row, col) MoveRight:) . 
+                          Ghost  -> over ghosts (Character (row, col) MoveRight:) .
                                     set (cell (row, col)) (Just Space)
                           x      -> set (cell (row, col)) (Just x)
-                                   
+
 parseBoard :: [String] -> ContextData
 parseBoard rows = set width (length $ head rows)
   . set height (length rows)
-  . foldr parseRow emptyContextData 
+  . foldr parseRow emptyContextData
   $ zip [0..] rows
 
 drawBoard :: ContextData -> Widget NameData
@@ -132,7 +132,7 @@ drawBoard cd = border $ vBox rows
           | cd ^. cell pos == Just Brick = '+'
           | any ((== pos) . view position) (cd ^. ghosts) = 'M'
           | otherwise = ' '
-                     
+
 ui :: ContextData -> Widget NameData
 ui cd = withBorderStyle unicode $ drawBoard cd
 
@@ -142,17 +142,19 @@ handleDraw s = [ui s]
 safeDecrease :: Int -> Int
 safeDecrease n
   | n > 0 = n - 1
-  | otherwise = 0                                                                    
+  | otherwise = 0
 
 safeIncrease :: Int -> Int -> Int
 safeIncrease limit n
   | n < limit - 1 = n + 1
   | otherwise = limit - 1
 
-safeMove :: ContextData -> Character -> Character
-safeMove cd ch
-  | cd ^. cell p == Just Space = ch & position .~ p 
-  | otherwise = ch & movement .~ Stop 
+safeMove :: Character -> PacmanM Character
+safeMove ch = do
+  c <- use $ cell p
+  return $ case c of
+    Just Space -> ch  & position .~ p
+    _ -> ch & movement .~ Stop
   where p = (case ch ^. movement of
               MoveUp -> up
               MoveDown -> down
@@ -162,9 +164,9 @@ safeMove cd ch
 
 processTick :: PacmanM ()
 processTick = do
-  cd <- get
-  player %= safeMove cd
-  ghosts . traversed %= safeMove cd        
+  player <~ (use player >>= safeMove)
+  gs <- mapM safeMove <$> use ghosts
+  ghosts <~ gs
 
 evalPacman :: PacmanM a -> ContextData -> a
 evalPacman = evalState
@@ -200,7 +202,7 @@ main = do
   forkIO $ forever $ do
     writeBChan chan Tick
     threadDelay 500000
-  let app = App { 
+  let app = App {
         appDraw = handleDraw
         , appChooseCursor = neverShowCursor
         , appHandleEvent = flip (evalPacman . handleEvent)
