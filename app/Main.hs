@@ -186,16 +186,15 @@ handleArrowKey m = do
   movePacman m
   onCD continue
 
+arrows = M.fromList [(KUp, MoveUp), (KDown, MoveDown), (KLeft, MoveLeft), (KRight, MoveRight)]
 handleEvent :: BrickEvent NameData EventData -> PacmanEvent (Next ContextData)
 handleEvent (AppEvent Tick) = do
   processTick
   onCD continue
 handleEvent (VtyEvent (EvKey (KChar 'c') [MCtrl])) = onCD halt
-handleEvent (VtyEvent (EvKey KUp [])) = handleArrowKey MoveUp
-handleEvent (VtyEvent (EvKey KDown [])) = handleArrowKey MoveDown
-handleEvent (VtyEvent (EvKey KLeft [])) = handleArrowKey MoveLeft
-handleEvent (VtyEvent (EvKey KRight [])) = handleArrowKey MoveRight
+handleEvent (VtyEvent (EvKey k [])) | k `M.member` arrows = handleArrowKey $ arrows M.! k
 handleEvent _  = onCD continue
+
 
 handleStartEvent :: ContextData -> EventM NameData ContextData
 handleStartEvent = return
