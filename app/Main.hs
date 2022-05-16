@@ -67,7 +67,11 @@ data ContextData = ContextData {
 
 makeLenses ''ContextData
 
-type PacmanM = State ContextData
+type PacmanT = StateT ContextData
+type PacmanEvent = PacmanT (EventM NameData)
+
+onCD :: Monad m => (ContextData -> m b) -> PacmanT m b
+onCD f = get >>= lift . f
 
 emptyContextData :: ContextData
 emptyContextData = ContextData (Character (0, 0) Stop) (0, 0) M.empty []
@@ -149,7 +153,7 @@ safeIncrease limit n
   | n < limit - 1 = n + 1
   | otherwise = limit - 1
 
-safeMove :: Character -> PacmanM Character
+safeMove :: Monad m => Character -> PacmanT m Character
 safeMove ch = do
   c <- use $ cell p
   return $ case c of
@@ -162,33 +166,35 @@ safeMove ch = do
               MoveRight -> right
               Stop -> id) $ ch ^. position
 
-processTick :: PacmanM ()
+-- (<==) :: MonadState s m => ASetter s s a b -> (a -> m b) -> m ()
+-- a <== f = _ a f
+
+processTick :: Monad m => PacmanT m ()
 processTick = do
   player <~ (use player >>= safeMove)
-  gs <- mapM safeMove <$> use ghosts
-  ghosts <~ gs
+  gs <- use ghosts
+  ghosts <~ mapM safeMove gs
 
-evalPacman :: PacmanM a -> ContextData -> a
-evalPacman = evalState
+evalPacman :: Monad m => PacmanT m a -> ContextData -> m a
+evalPacman = evalStateT
 
-movePacman :: Movement -> PacmanM ()
+movePacman :: Monad m => Movement -> PacmanT m ()
 movePacman = assign $ player . movement
 
-handleArrowKey :: Movement -> PacmanM (EventM NameData (Next ContextData))
+handleArrowKey :: Movement -> PacmanEvent (Next ContextData)
 handleArrowKey m = do
   movePacman m
-  gets continue
+  onCD continue
 
-handleEvent :: BrickEvent NameData EventData -> PacmanM (EventM NameData (Next ContextData))
+arrows = M.fromList [(KUp, MoveUp), (KDown, MoveDown), (KLeft, MoveLeft), (KRight, MoveRight)]
+handleEvent :: BrickEvent NameData EventData -> PacmanEvent (Next ContextData)
 handleEvent (AppEvent Tick) = do
   processTick
-  gets continue
-handleEvent (VtyEvent (EvKey (KChar 'c') [MCtrl])) = gets halt
-handleEvent (VtyEvent (EvKey KUp [])) = handleArrowKey MoveUp
-handleEvent (VtyEvent (EvKey KDown [])) = handleArrowKey MoveDown
-handleEvent (VtyEvent (EvKey KLeft [])) = handleArrowKey MoveLeft
-handleEvent (VtyEvent (EvKey KRight [])) = handleArrowKey MoveRight
-handleEvent _  = gets continue
+  onCD continue
+handleEvent (VtyEvent (EvKey (KChar 'c') [MCtrl])) = onCD halt
+handleEvent (VtyEvent (EvKey k [])) | k `M.member` arrows = handleArrowKey $ arrows M.! k
+handleEvent _  = onCD continue
+
 
 handleStartEvent :: ContextData -> EventM NameData ContextData
 handleStartEvent = return
