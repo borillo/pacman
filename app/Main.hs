@@ -1,6 +1,8 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 module Main where
 
@@ -50,13 +52,19 @@ data BoardCell = Space | Brick | Pacman | Ghost deriving (Show, Eq)
 type Board = M.Map Position BoardCell
 data Movement = MoveLeft | MoveRight | MoveUp | MoveDown | Stop deriving Show
 type Ghosts = [Character]
+type Strategy = ContextData -> Character -> Character
+
+instance Show Strategy where
+  show s = "Strategy()"
+
+doNothing :: Strategy
+doNothing cd = id
 
 data Character = Character {
   _position :: Position,
-  _movement :: Movement
+  _movement :: Movement,
+  _changeDirection :: Strategy
 } deriving Show
-
-makeLenses ''Character
 
 data ContextData = ContextData {
   _player :: Character,
@@ -65,6 +73,7 @@ data ContextData = ContextData {
   _ghosts :: Ghosts
 } deriving Show
 
+makeLenses ''Character
 makeLenses ''ContextData
 
 type PacmanT = StateT ContextData
@@ -74,7 +83,7 @@ onCD :: Monad m => (ContextData -> m b) -> PacmanT m b
 onCD f = get >>= lift . f
 
 emptyContextData :: ContextData
-emptyContextData = ContextData (Character (0, 0) Stop) (0, 0) M.empty []
+emptyContextData = ContextData (Character (0, 0) Stop doNothing) (0, 0) M.empty []
 
 positionX :: Lens' Character Column
 positionX = position . _2
@@ -117,7 +126,7 @@ parseRow (row, line) board = foldr f board $ zip [0..] line
   where f (col, c) = case parseCell c of
                           Pacman -> set (player . position) (row, col) .
                                     set (cell (row, col)) (Just Space)
-                          Ghost  -> over ghosts (Character (row, col) MoveRight:) .
+                          Ghost  -> over ghosts (Character (row, col) MoveRight doNothing :) .
                                     set (cell (row, col)) (Just Space)
                           x      -> set (cell (row, col)) (Just x)
 
@@ -153,12 +162,21 @@ safeIncrease limit n
   | n < limit - 1 = n + 1
   | otherwise = limit - 1
 
+canRotate = undefined
+
 safeMove :: Monad m => Character -> PacmanT m Character
 safeMove ch = do
   c <- use $ cell p
-  return $ case c of
-    Just Space -> ch  & position .~ p
-    _ -> ch & movement .~ Stop
+  case c of
+    Just Space -> do
+                    let ch' = ch & position .~ p
+                    r <- canRotate p (ch' ^. movement)
+                    if r then do
+                      cd <- get
+                      return $ (ch' ^. changeDirection) cd ch'
+                    else
+                      return ch'
+    _ -> return $ ch & movement .~ Stop
   where p = (case ch ^. movement of
               MoveUp -> up
               MoveDown -> down
