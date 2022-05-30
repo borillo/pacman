@@ -50,19 +50,37 @@ right p = p & _2 %~ (+1)
 type DashBoardSize = (Width, Height)
 data BoardCell = Space | Brick | Pacman | Ghost deriving (Show, Eq)
 type Board = M.Map Position BoardCell
-data Movement = MoveLeft | MoveRight | MoveUp | MoveDown | Stop deriving Show
+data Movement = MoveLeft | MoveRight | MoveUp | MoveDown | Stop deriving (Show, Eq, Ord)
 type Ghosts = [Character]
 type Strategy = Character -> PacmanM Character
-
-type PacmanT = StateT ContextData
-type PacmanM = PacmanT Identity
-type PacmanEvent = PacmanT (EventM NameData)
 
 instance Show Strategy where
   show s = "Strategy()"
 
-doNothing :: Strategy
-doNothing = return
+leftOf :: Movement -> Movement
+leftOf MoveLeft = MoveDown
+leftOf MoveRight = MoveUp
+leftOf MoveUp = MoveLeft
+leftOf MoveDown = MoveRight
+leftOf Stop = Stop
+
+rightOf :: Movement -> Movement
+rightOf MoveLeft = MoveUp
+rightOf MoveRight = MoveDown
+rightOf MoveUp = MoveRight
+rightOf MoveDown = MoveLeft
+rightOf Stop = Stop
+
+move :: Movement -> Position -> Position
+move MoveUp = up
+move MoveDown = down
+move MoveLeft = left
+move MoveRight = right
+move Stop = id
+
+type PacmanT = StateT ContextData
+type PacmanM = PacmanT Identity
+type PacmanEvent = PacmanT (EventM NameData)
 
 data Character = Character {
   _position :: Position,
@@ -79,6 +97,28 @@ data ContextData = ContextData {
 
 makeLenses ''Character
 makeLenses ''ContextData
+  
+doNothing :: Strategy
+doNothing = return
+
+distance :: Position -> Position -> Int
+distance (row, col) (row', col') = (row - row')^2 + (col - col')^2
+
+distanceToPacman :: Position -> PacmanM Int
+distanceToPacman p = uses (player . position) (distance p)
+
+--TODO: Revisar el when/forM
+
+doChasePacman :: Strategy
+doChasePacman c = do
+  ds <- forM [MoveLeft, MoveRight, MoveUp, MoveDown] $ \d -> do
+    let p = move d (c ^. position)
+    free <- isFree p
+    guard free 
+    dst <- distanceToPacman (c ^. position)
+    return (dst, d)
+  let d = snd $ minimum ds
+  return $ set movement d c
 
 onCD :: Monad m => (ContextData -> m b) -> PacmanT m b
 onCD f = get >>= lift . f
@@ -103,6 +143,9 @@ height = dashboardSize . _2
 
 cell :: Position -> Lens' ContextData (Maybe BoardCell)
 cell p = dashboard . at p
+
+isFree :: Position -> PacmanM Bool
+isFree p = (== Just Space) <$> use (cell p)
 
 type CharacterL = Lens' ContextData Character
 
@@ -130,7 +173,7 @@ parseRow (row, line) board = foldr f board $ zip [0..] line
   where f (col, c) = case parseCell c of
                           Pacman -> set (player . position) (row, col) .
                                     set (cell (row, col)) (Just Space)
-                          Ghost  -> over ghosts (Character (row, col) MoveRight doNothing :) .
+                          Ghost  -> over ghosts (Character (row, col) MoveRight doChasePacman :) .
                                     set (cell (row, col)) (Just Space)
                           x      -> set (cell (row, col)) (Just x)
 
@@ -166,33 +209,9 @@ safeIncrease limit n
   | n < limit - 1 = n + 1
   | otherwise = limit - 1
 
-leftOf :: Movement -> Movement
-leftOf MoveLeft = MoveDown
-leftOf MoveRight = MoveUp
-leftOf MoveUp = MoveLeft
-leftOf MoveDown = MoveRight
-leftOf Stop = Stop
-
-rightOf :: Movement -> Movement
-rightOf MoveLeft = MoveUp
-rightOf MoveRight = MoveDown
-rightOf MoveUp = MoveRight
-rightOf MoveDown = MoveLeft
-rightOf Stop = Stop
-
-isFree :: Position -> PacmanM Bool
-isFree p = (== Just Space) <$> use (cell p)
-
 canRotate :: Position -> Movement -> PacmanM Bool
 canRotate p m = (||) <$> isFree (move (leftOf m) p)
                      <*> isFree (move (rightOf m) p)
-
-move :: Movement -> Position -> Position
-move MoveUp = up
-move MoveDown = down
-move MoveLeft = left
-move MoveRight = right
-move Stop = id
 
 safeMove :: Character -> PacmanM Character
 safeMove ch = do
