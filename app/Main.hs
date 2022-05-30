@@ -52,13 +52,17 @@ data BoardCell = Space | Brick | Pacman | Ghost deriving (Show, Eq)
 type Board = M.Map Position BoardCell
 data Movement = MoveLeft | MoveRight | MoveUp | MoveDown | Stop deriving Show
 type Ghosts = [Character]
-type Strategy = ContextData -> Character -> Character
+type Strategy = Character -> PacmanM Character
+
+type PacmanT = StateT ContextData
+type PacmanM = PacmanT Identity
+type PacmanEvent = PacmanT (EventM NameData)
 
 instance Show Strategy where
   show s = "Strategy()"
 
 doNothing :: Strategy
-doNothing cd = id
+doNothing = return
 
 data Character = Character {
   _position :: Position,
@@ -76,11 +80,11 @@ data ContextData = ContextData {
 makeLenses ''Character
 makeLenses ''ContextData
 
-type PacmanT = StateT ContextData
-type PacmanEvent = PacmanT (EventM NameData)
-
 onCD :: Monad m => (ContextData -> m b) -> PacmanT m b
 onCD f = get >>= lift . f
+
+withPacmanM :: Monad m => PacmanM a -> PacmanT m a
+withPacmanM = mapStateT $ return . runIdentity
 
 emptyContextData :: ContextData
 emptyContextData = ContextData (Character (0, 0) Stop doNothing) (0, 0) M.empty []
@@ -162,32 +166,53 @@ safeIncrease limit n
   | n < limit - 1 = n + 1
   | otherwise = limit - 1
 
-canRotate = undefined
+leftOf :: Movement -> Movement
+leftOf MoveLeft = MoveDown
+leftOf MoveRight = MoveUp
+leftOf MoveUp = MoveLeft
+leftOf MoveDown = MoveRight
+leftOf Stop = Stop
 
-safeMove :: Monad m => Character -> PacmanT m Character
+rightOf :: Movement -> Movement
+rightOf MoveLeft = MoveUp
+rightOf MoveRight = MoveDown
+rightOf MoveUp = MoveRight
+rightOf MoveDown = MoveLeft
+rightOf Stop = Stop
+
+isFree :: Position -> PacmanM Bool
+isFree p = (== Just Space) <$> use (cell p)
+
+canRotate :: Position -> Movement -> PacmanM Bool
+canRotate p m = (||) <$> isFree (move (leftOf m) p)
+                     <*> isFree (move (rightOf m) p)
+
+move :: Movement -> Position -> Position
+move MoveUp = up
+move MoveDown = down
+move MoveLeft = left
+move MoveRight = right
+move Stop = id
+
+safeMove :: Character -> PacmanM Character
 safeMove ch = do
-  c <- use $ cell p
-  case c of
-    Just Space -> do
-                    let ch' = ch & position .~ p
-                    r <- canRotate p (ch' ^. movement)
-                    if r then do
-                      cd <- get
-                      return $ (ch' ^. changeDirection) cd ch'
-                    else
-                      return ch'
-    _ -> return $ ch & movement .~ Stop
-  where p = (case ch ^. movement of
-              MoveUp -> up
-              MoveDown -> down
-              MoveLeft -> left
-              MoveRight -> right
-              Stop -> id) $ ch ^. position
+  let p = move (ch ^. movement) (ch ^. position)
+  free <- isFree p 
+  if free then
+    do
+      let ch' = ch & position .~ p
+      r <- canRotate p (ch' ^. movement)
+      if r then 
+        (ch' ^. changeDirection) ch'
+      else
+        return ch'
+  else        
+    return $ ch & movement .~ Stop
 
 -- (<==) :: MonadState s m => ASetter s s a b -> (a -> m b) -> m ()
 -- a <== f = _ a f
 
-processTick :: Monad m => PacmanT m ()
+processTick :: PacmanM ()
 processTick = do
   player <~ (use player >>= safeMove)
   gs <- use ghosts
@@ -207,7 +232,7 @@ handleArrowKey m = do
 arrows = M.fromList [(KUp, MoveUp), (KDown, MoveDown), (KLeft, MoveLeft), (KRight, MoveRight)]
 handleEvent :: BrickEvent NameData EventData -> PacmanEvent (Next ContextData)
 handleEvent (AppEvent Tick) = do
-  processTick
+  withPacmanM processTick
   onCD continue
 handleEvent (VtyEvent (EvKey (KChar 'c') [MCtrl])) = onCD halt
 handleEvent (VtyEvent (EvKey k [])) | k `M.member` arrows = handleArrowKey $ arrows M.! k
