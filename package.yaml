@@ -26,6 +26,7 @@ dependencies:
   - lens
   - containers
   - mtl
+  - random
 
 library:
   source-dirs: src

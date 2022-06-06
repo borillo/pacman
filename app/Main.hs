@@ -3,6 +3,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Main where
 
@@ -23,7 +24,11 @@ import Control.Monad.IO.Class
 
 import Control.Concurrent (threadDelay, forkIO)
 
+import Data.Maybe(catMaybes, isJust, fromJust)
+import Data.List(find)
 import qualified Data.Map as M
+
+import System.Random
 
 type NameData = ()
 data EventData = Tick
@@ -48,14 +53,22 @@ right :: Position -> Position
 right p = p & _2 %~ (+1)
 
 type DashBoardSize = (Width, Height)
-data BoardCell = Space | Brick | Pacman | Ghost deriving (Show, Eq)
+data BoardCell = Space | Brick | Pacman | Ghost Strategy Name deriving (Show, Eq)
 type Board = M.Map Position BoardCell
 data Movement = MoveLeft | MoveRight | MoveUp | MoveDown | Stop deriving (Show, Eq, Ord)
+type Name = Char
+
+movements :: [Movement]
+movements = [MoveLeft, MoveRight, MoveUp, MoveDown]
+
 type Ghosts = [Character]
 type Strategy = Character -> PacmanM Character
 
 instance Show Strategy where
   show s = "Strategy()"
+
+instance Eq Strategy where
+  s1 == s = False
 
 leftOf :: Movement -> Movement
 leftOf MoveLeft = MoveDown
@@ -85,14 +98,16 @@ type PacmanEvent = PacmanT (EventM NameData)
 data Character = Character {
   _position :: Position,
   _movement :: Movement,
-  _changeDirection :: Strategy
+  _changeDirection :: Strategy,
+  _name :: Name
 } deriving Show
 
 data ContextData = ContextData {
   _player :: Character,
   _dashboardSize :: DashBoardSize,
   _dashboard :: Board,
-  _ghosts :: Ghosts
+  _ghosts :: Ghosts,
+  _randomGenerator :: StdGen
 } deriving Show
 
 makeLenses ''Character
@@ -107,18 +122,26 @@ distance (row, col) (row', col') = (row - row')^2 + (col - col')^2
 distanceToPacman :: Position -> PacmanM Int
 distanceToPacman p = uses (player . position) (distance p)
 
---TODO: Revisar el when/forM
+chooseOne :: [a] -> PacmanM a
+chooseOne xs = do
+  (i, g) <- uses randomGenerator (randomR (0, length xs-1)) 
+  randomGenerator .= g
+  return $ xs !! i
 
 doChasePacman :: Strategy
 doChasePacman c = do
-  ds <- forM [MoveLeft, MoveRight, MoveUp, MoveDown] $ \d -> do
-    let p = move d (c ^. position)
-    free <- isFree p
-    guard free 
-    dst <- distanceToPacman (c ^. position)
-    return (dst, d)
-  let d = snd $ minimum ds
-  return $ set movement d c
+  freeDirections <- filterM (\d -> isFree $ move d (c ^. position)) movements
+  ds <- mapM (\d -> do
+    dst <- distanceToPacman $ move d (c ^. position)
+    return (dst, d)) freeDirections
+  let closest = snd $ minimum ds
+  return $ set movement closest c
+
+doRandomStrategy :: Strategy
+doRandomStrategy c = do
+  freeDirections <- filterM (\d -> isFree $ move d (c ^. position)) movements
+  newMovement <- chooseOne freeDirections
+  return $ set movement newMovement c
 
 onCD :: Monad m => (ContextData -> m b) -> PacmanT m b
 onCD f = get >>= lift . f
@@ -127,7 +150,7 @@ withPacmanM :: Monad m => PacmanM a -> PacmanT m a
 withPacmanM = mapStateT $ return . runIdentity
 
 emptyContextData :: ContextData
-emptyContextData = ContextData (Character (0, 0) Stop doNothing) (0, 0) M.empty []
+emptyContextData = ContextData (Character (0, 0) Stop doNothing 'C') (0, 0) M.empty [] (mkStdGen 42)
 
 positionX :: Lens' Character Column
 positionX = position . _2
@@ -157,7 +180,7 @@ maze = [
   "|   +----- |",
   "|          |",
   "| ------   |",
-  "|     M    |",
+  "|     W    |",
   "|   ---    |",
   "|  M       |",
   "+----------+"]
@@ -165,7 +188,8 @@ maze = [
 parseCell :: Char -> BoardCell
 parseCell ' ' = Space
 parseCell 'C' = Pacman
-parseCell 'M' = Ghost
+parseCell 'M' = Ghost doChasePacman 'M'
+parseCell 'W' = Ghost doRandomStrategy 'W'
 parseCell _ = Brick
 
 parseRow :: (Row, String) -> ContextData -> ContextData
@@ -173,7 +197,7 @@ parseRow (row, line) board = foldr f board $ zip [0..] line
   where f (col, c) = case parseCell c of
                           Pacman -> set (player . position) (row, col) .
                                     set (cell (row, col)) (Just Space)
-                          Ghost  -> over ghosts (Character (row, col) MoveRight doChasePacman :) .
+                          Ghost s n -> over ghosts (Character (row, col) MoveRight s n :) .
                                     set (cell (row, col)) (Just Space)
                           x      -> set (cell (row, col)) (Just x)
 
@@ -188,10 +212,12 @@ drawBoard cd = border $ vBox rows
   where rows = map (str . cellsInRow) [0 .. cd ^. height - 1]
         cellsInRow row = map (cellToChar . (row,)) [0 .. cd ^. width - 1]
         cellToChar pos
-          | pos == cd ^. player . position = 'C'
+          | pos == cd ^. player . position = cd ^. player . name
           | cd ^. cell pos == Just Brick = '+'
-          | any ((== pos) . view position) (cd ^. ghosts) = 'M'
+          | isJust firstPos = fromJust firstPos ^. name
           | otherwise = ' '
+          where firstPos = find ((== pos) . view position) (cd ^. ghosts)
+
 
 ui :: ContextData -> Widget NameData
 ui cd = withBorderStyle unicode $ drawBoard cd
@@ -256,7 +282,6 @@ handleEvent (AppEvent Tick) = do
 handleEvent (VtyEvent (EvKey (KChar 'c') [MCtrl])) = onCD halt
 handleEvent (VtyEvent (EvKey k [])) | k `M.member` arrows = handleArrowKey $ arrows M.! k
 handleEvent _  = onCD continue
-
 
 handleStartEvent :: ContextData -> EventM NameData ContextData
 handleStartEvent = return
