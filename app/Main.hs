@@ -4,6 +4,7 @@
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE ImportQualifiedPost #-}
 
 module Main where
 
@@ -15,7 +16,7 @@ import Brick.BChan (newBChan, writeBChan)
 
 import Graphics.Vty.Attributes
 import Graphics.Vty.Input
-import qualified Graphics.Vty as V
+import Graphics.Vty qualified as V
 
 import Control.Lens
 import Control.Monad
@@ -26,7 +27,8 @@ import Control.Concurrent (threadDelay, forkIO)
 
 import Data.Maybe(catMaybes, isJust, fromJust)
 import Data.List(find)
-import qualified Data.Map as M
+import Data.Map qualified as M
+import Data.Set qualified as S
 
 import System.Random
 
@@ -53,7 +55,8 @@ right :: Position -> Position
 right p = p & _2 %~ (+1)
 
 type DashBoardSize = (Width, Height)
-data BoardCell = Space | Brick | Pacman | Ghost Strategy Name deriving (Show, Eq)
+data BoardCell = Space | Brick Char deriving (Show, Eq)
+data Sprite = Pacman | Dot | Ghost Strategy Name deriving (Show, Eq)
 type Board = M.Map Position BoardCell
 data Movement = MoveLeft | MoveRight | MoveUp | MoveDown | Stop deriving (Show, Eq, Ord)
 type Name = Char
@@ -107,6 +110,7 @@ data ContextData = ContextData {
   _dashboardSize :: DashBoardSize,
   _dashboard :: Board,
   _ghosts :: Ghosts,
+  _dots :: S.Set Position,  
   _randomGenerator :: StdGen
 } deriving Show
 
@@ -150,7 +154,14 @@ withPacmanM :: Monad m => PacmanM a -> PacmanT m a
 withPacmanM = mapStateT $ return . runIdentity
 
 emptyContextData :: ContextData
-emptyContextData = ContextData (Character (0, 0) Stop doNothing 'C') (0, 0) M.empty [] (mkStdGen 42)
+emptyContextData = ContextData {
+  _player = Character (0, 0) Stop doNothing 'C',
+  _dashboardSize = (0, 0),
+  _dashboard = M.empty,
+  _ghosts = [],
+  _dots = S.empty,  
+  _randomGenerator = mkStdGen 42
+}   
 
 positionX :: Lens' Character Column
 positionX = position . _2
@@ -174,32 +185,39 @@ type CharacterL = Lens' ContextData Character
 
 maze :: [String]
 maze = [
-  "+----------+",
-  "| C        |",
-  "| --+      |",
-  "|   +----- |",
-  "|          |",
-  "| ------   |",
-  "|     W    |",
-  "|   ---    |",
-  "|  M       |",
-  "+----------+"]
+  "+==========+",
+  "|·C···====·|",
+  "|·==+······|",
+  "|···+=====·|",
+  "|·|········|",
+  "|·+==·====·|",
+  "|·····W····|",
+  "|·==·===·=·|",
+  "|··M·······|",
+  "+==========+"]
 
-parseCell :: Char -> BoardCell
-parseCell ' ' = Space
-parseCell 'C' = Pacman
-parseCell 'M' = Ghost doChasePacman 'M'
-parseCell 'W' = Ghost doRandomStrategy 'W'
-parseCell _ = Brick
+parseCell :: Char -> Either BoardCell Sprite
+parseCell ' ' = Left Space
+parseCell '·' = Right Dot
+parseCell 'C' = Right Pacman
+parseCell 'M' = Right $ Ghost doChasePacman 'M'
+parseCell 'W' = Right $ Ghost doRandomStrategy 'W'
+parseCell x = Left $ Brick x
 
 parseRow :: (Row, String) -> ContextData -> ContextData
 parseRow (row, line) board = foldr f board $ zip [0..] line
-  where f (col, c) = case parseCell c of
-                          Pacman -> set (player . position) (row, col) .
-                                    set (cell (row, col)) (Just Space)
-                          Ghost s n -> over ghosts (Character (row, col) MoveRight s n :) .
-                                    set (cell (row, col)) (Just Space)
-                          x      -> set (cell (row, col)) (Just x)
+  where f (col, c) = 
+          case parseCell c of
+               Left bc  -> setCell bc
+               Right sp -> setCell Space . setSprite sp
+          where p = (row, col)
+                setCell :: BoardCell -> ContextData -> ContextData
+                setCell = set (cell p) . Just
+                setSprite :: Sprite -> ContextData -> ContextData
+                setSprite = \case
+                      Dot       -> over dots (S.insert p)
+                      Pacman    -> set (player . position) p
+                      Ghost s n -> over ghosts (Character p MoveRight s n :)
 
 parseBoard :: [String] -> ContextData
 parseBoard rows = set width (length $ head rows)
@@ -213,11 +231,12 @@ drawBoard cd = border $ vBox rows
         cellsInRow row = map (cellToChar . (row,)) [0 .. cd ^. width - 1]
         cellToChar pos
           | pos == cd ^. player . position = cd ^. player . name
-          | cd ^. cell pos == Just Brick = '+'
           | isJust firstPos = fromJust firstPos ^. name
-          | otherwise = ' '
-          where firstPos = find ((== pos) . view position) (cd ^. ghosts)
-
+          | S.member pos (cd ^. dots) = '·'
+          | otherwise = case cd ^. cell pos of
+              Just (Brick c) -> c
+              _ -> ' '
+          where firstPos = find ((== pos) . view position) (cd ^. ghosts)                
 
 ui :: ContextData -> Widget NameData
 ui cd = withBorderStyle unicode $ drawBoard cd
@@ -254,12 +273,15 @@ safeMove ch = do
   else        
     return $ ch & movement .~ Stop
 
--- (<==) :: MonadState s m => ASetter s s a b -> (a -> m b) -> m ()
--- a <== f = _ a f
+eatDot :: PacmanM ()
+eatDot = do
+  p <- use (player . position)
+  dots %= S.delete p
 
 processTick :: PacmanM ()
 processTick = do
   player <~ (use player >>= safeMove)
+  eatDot
   gs <- use ghosts
   ghosts <~ mapM safeMove gs
 

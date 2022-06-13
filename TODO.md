@@ -1,0 +1,4 @@
+- Cuando no es posible cambiar de dirección que no pare
+- Modularizar
+- Revisar parseRow y drawBoard
+- Revisar relacion Movement <> Direction
