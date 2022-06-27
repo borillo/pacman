@@ -8,7 +8,7 @@
 
 module Main where
 
-import Brick
+import Brick hiding (Direction)
 import Brick.Widgets.Center
 import Brick.Widgets.Border
 import Brick.Widgets.Border.Style
@@ -58,11 +58,12 @@ type DashBoardSize = (Width, Height)
 data BoardCell = Space | Brick Char deriving (Show, Eq)
 data Sprite = Pacman | Dot | Ghost Strategy Name deriving (Show, Eq)
 type Board = M.Map Position BoardCell
-data Movement = MoveLeft | MoveRight | MoveUp | MoveDown | Stop deriving (Show, Eq, Ord)
+data Movement = Moving Direction | Stop deriving (Show, Eq, Ord)
+data Direction = DLeft | DRight | DUp | DDown deriving (Show, Eq, Ord, Enum)
 type Name = Char
 
-movements :: [Movement]
-movements = [MoveLeft, MoveRight, MoveUp, MoveDown]
+directions :: [Direction]
+directions = enumFrom DLeft
 
 type Ghosts = [Character]
 type Strategy = Character -> PacmanM Character
@@ -73,26 +74,23 @@ instance Show Strategy where
 instance Eq Strategy where
   s1 == s = False
 
-leftOf :: Movement -> Movement
-leftOf MoveLeft = MoveDown
-leftOf MoveRight = MoveUp
-leftOf MoveUp = MoveLeft
-leftOf MoveDown = MoveRight
-leftOf Stop = Stop
+turnLeft :: Direction -> Direction
+turnLeft DLeft  = DDown
+turnLeft DRight = DUp
+turnLeft DUp    = DLeft
+turnLeft DDown  = DRight
 
-rightOf :: Movement -> Movement
-rightOf MoveLeft = MoveUp
-rightOf MoveRight = MoveDown
-rightOf MoveUp = MoveRight
-rightOf MoveDown = MoveLeft
-rightOf Stop = Stop
+turnRight :: Direction -> Direction
+turnRight DLeft  = DUp
+turnRight DRight = DDown
+turnRight DUp    = DRight
+turnRight DDown  = DLeft
 
-move :: Movement -> Position -> Position
-move MoveUp = up
-move MoveDown = down
-move MoveLeft = left
-move MoveRight = right
-move Stop = id
+move :: Direction -> Position -> Position
+move DUp    = up
+move DDown  = down
+move DLeft  = left
+move DRight = right
 
 type PacmanT = StateT ContextData
 type PacmanM = PacmanT Identity
@@ -110,13 +108,13 @@ data ContextData = ContextData {
   _dashboardSize :: DashBoardSize,
   _dashboard :: Board,
   _ghosts :: Ghosts,
-  _dots :: S.Set Position,  
+  _dots :: S.Set Position,
   _randomGenerator :: StdGen
 } deriving Show
 
 makeLenses ''Character
 makeLenses ''ContextData
-  
+
 doNothing :: Strategy
 doNothing = return
 
@@ -128,24 +126,24 @@ distanceToPacman p = uses (player . position) (distance p)
 
 chooseOne :: [a] -> PacmanM a
 chooseOne xs = do
-  (i, g) <- uses randomGenerator (randomR (0, length xs-1)) 
+  (i, g) <- uses randomGenerator (randomR (0, length xs-1))
   randomGenerator .= g
   return $ xs !! i
 
 doChasePacman :: Strategy
 doChasePacman c = do
-  freeDirections <- filterM (\d -> isFree $ move d (c ^. position)) movements
+  freeDirections <- filterM (\d -> isFree $ move d (c ^. position)) directions
   ds <- mapM (\d -> do
     dst <- distanceToPacman $ move d (c ^. position)
     return (dst, d)) freeDirections
   let closest = snd $ minimum ds
-  return $ set movement closest c
+  return $ set movement (Moving closest) c
 
 doRandomStrategy :: Strategy
 doRandomStrategy c = do
-  freeDirections <- filterM (\d -> isFree $ move d (c ^. position)) movements
+  freeDirections <- filterM (\d -> isFree $ move d (c ^. position)) directions
   newMovement <- chooseOne freeDirections
-  return $ set movement newMovement c
+  return $ set movement (Moving newMovement) c
 
 onCD :: Monad m => (ContextData -> m b) -> PacmanT m b
 onCD f = get >>= lift . f
@@ -159,9 +157,9 @@ emptyContextData = ContextData {
   _dashboardSize = (0, 0),
   _dashboard = M.empty,
   _ghosts = [],
-  _dots = S.empty,  
+  _dots = S.empty,
   _randomGenerator = mkStdGen 42
-}   
+}
 
 positionX :: Lens' Character Column
 positionX = position . _2
@@ -178,7 +176,7 @@ height = dashboardSize . _2
 cell :: Position -> Lens' ContextData (Maybe BoardCell)
 cell p = dashboard . at p
 
-isFree :: Position -> PacmanM Bool
+isFree :: Monad m => Position -> PacmanT m Bool
 isFree p = (== Just Space) <$> use (cell p)
 
 type CharacterL = Lens' ContextData Character
@@ -206,7 +204,7 @@ parseCell x = Left $ Brick x
 
 parseRow :: (Row, String) -> ContextData -> ContextData
 parseRow (row, line) board = foldr f board $ zip [0..] line
-  where f (col, c) = 
+  where f (col, c) =
           case parseCell c of
                Left bc  -> setCell bc
                Right sp -> setCell Space . setSprite sp
@@ -217,7 +215,7 @@ parseRow (row, line) board = foldr f board $ zip [0..] line
                 setSprite = \case
                       Dot       -> over dots (S.insert p)
                       Pacman    -> set (player . position) p
-                      Ghost s n -> over ghosts (Character p MoveRight s n :)
+                      Ghost s n -> over ghosts (Character p (Moving DRight) s n :)
 
 parseBoard :: [String] -> ContextData
 parseBoard rows = set width (length $ head rows)
@@ -236,7 +234,7 @@ drawBoard cd = border $ vBox rows
           | otherwise = case cd ^. cell pos of
               Just (Brick c) -> c
               _ -> ' '
-          where firstPos = find ((== pos) . view position) (cd ^. ghosts)                
+          where firstPos = find ((== pos) . view position) (cd ^. ghosts)
 
 ui :: ContextData -> Widget NameData
 ui cd = withBorderStyle unicode $ drawBoard cd
@@ -254,24 +252,26 @@ safeIncrease limit n
   | n < limit - 1 = n + 1
   | otherwise = limit - 1
 
-canRotate :: Position -> Movement -> PacmanM Bool
-canRotate p m = (||) <$> isFree (move (leftOf m) p)
-                     <*> isFree (move (rightOf m) p)
+canRotate :: Position -> Direction -> PacmanM Bool
+canRotate p d = (||) <$> isFree (move (turnLeft d) p)
+                     <*> isFree (move (turnRight d) p)
 
 safeMove :: Character -> PacmanM Character
-safeMove ch = do
-  let p = move (ch ^. movement) (ch ^. position)
-  free <- isFree p 
-  if free then
-    do
-      let ch' = ch & position .~ p
-      r <- canRotate p (ch' ^. movement)
-      if r then 
-        (ch' ^. changeDirection) ch'
+safeMove ch = case ch ^. movement of
+    Stop -> return ch
+    Moving d -> do
+      let p = move d (ch ^. position)
+      free <- isFree p
+      if free then
+        do
+          let ch' = ch & position .~ p
+          r <- canRotate p d
+          if r then
+            (ch' ^. changeDirection) ch'
+          else
+            return ch'
       else
-        return ch'
-  else        
-    return $ ch & movement .~ Stop
+        return $ ch & movement .~ Stop
 
 eatDot :: PacmanM ()
 eatDot = do
@@ -288,15 +288,18 @@ processTick = do
 evalPacman :: Monad m => PacmanT m a -> ContextData -> m a
 evalPacman = evalStateT
 
-movePacman :: Monad m => Movement -> PacmanT m ()
-movePacman = assign $ player . movement
+movePacman :: Monad m => Direction -> PacmanT m ()
+movePacman d = do
+  p <- uses (player . position) (move d)
+  free <- isFree p
+  when free $ assign (player . movement) (Moving d)
 
-handleArrowKey :: Movement -> PacmanEvent (Next ContextData)
-handleArrowKey m = do
-  movePacman m
+handleArrowKey :: Direction -> PacmanEvent (Next ContextData)
+handleArrowKey d = do
+  movePacman d
   onCD continue
 
-arrows = M.fromList [(KUp, MoveUp), (KDown, MoveDown), (KLeft, MoveLeft), (KRight, MoveRight)]
+arrows = M.fromList [(KUp, DUp), (KDown, DDown), (KLeft, DLeft), (KRight, DRight)]
 handleEvent :: BrickEvent NameData EventData -> PacmanEvent (Next ContextData)
 handleEvent (AppEvent Tick) = do
   withPacmanM processTick
